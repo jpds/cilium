@@ -239,16 +239,19 @@ func doGC4(m *bpf.Map, deleted *int, time uint32) {
 
 // GC runs garbage collection for map m with name mapName with interval interval.
 // It returns how many items were deleted from m.
-func GC(m *bpf.Map, mapName string) int {
-	t, _ := bpf.GetMtime()
-	tsec := t / 1000000000
+func GC(m *bpf.Map, mapName string, timeout uint32) int {
+	if timeout == 0 {
+		t, _ := bpf.GetMtime()
+		tsec := t / 1000000000
+		timeout = uint32(tsec)
+	}
 	deleted := 0
 
 	switch mapName {
 	case MapName6, MapName6Global:
-		doGC6(m, &deleted, uint32(tsec))
+		doGC6(m, &deleted, timeout)
 	case MapName4, MapName4Global:
-		doGC4(m, &deleted, uint32(tsec))
+		doGC4(m, &deleted, timeout)
 	}
 
 	return deleted

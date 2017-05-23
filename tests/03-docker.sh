@@ -66,3 +66,7 @@ ping6 -c 5 "$SERVER_IP" || {
 }
 
 cilium policy delete --all
+
+ping6 -c 2 "$SERVER_IP" && {
+	abort "Error: Unexpected connectivity between host and server after policy removed"
+}

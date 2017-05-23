@@ -46,6 +46,14 @@ type traceState struct {
 	ruleID int
 }
 
+// NumberOfRules return the number of rules in the repository.
+func (p *Repository) NumberOfRules() int {
+	p.Mutex.RLock()
+	nRules := len(p.rules)
+	p.Mutex.RUnlock()
+	return nRules
+}
+
 // CanReachRLocked evaluates the policy repository for the provided search
 // context and returns the verdict or api.Undecided if no rule matches. The
 // policy repository mutex must be held.

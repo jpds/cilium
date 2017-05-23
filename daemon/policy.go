@@ -286,8 +286,15 @@ func (d *Daemon) PolicyDelete(labels labels.LabelArray) *apierror.APIError {
 	// An error is only returned if a label filter was provided and then
 	// not found A deletion request for all policy entries if no policied
 	// are loaded should not fail.
-	if d.policy.DeleteByLabels(labels) == 0 && len(labels) != 0 {
-		return apierror.New(DeletePolicyNotFoundCode, "policy not found")
+	if d.policy.DeleteByLabels(labels) == 0 {
+		if len(labels) != 0 {
+			return apierror.New(DeletePolicyNotFoundCode, "policy not found")
+		}
+	} else {
+		// TODO run GC only for endpoints that have the policy changed.
+		if d.PolicyEnabled() && d.policy.NumberOfRules() == 0 {
+			d.CleanConntrack()
+		}
 	}
 
 	d.TriggerPolicyUpdates([]policy.NumericIdentity{})

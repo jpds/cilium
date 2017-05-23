@@ -31,7 +31,7 @@ const (
 	GcInterval int = 10
 )
 
-func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
+func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool, gcInterval uint32) {
 	var file string
 	var mapType string
 	// TODO: We need to optimize this a bit in future, so we traverse
@@ -67,7 +67,7 @@ func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
 		return
 	}
 
-	deleted := ctmap.GC(m, mapType)
+	deleted := ctmap.GC(m, mapType, gcInterval)
 
 	if deleted > 0 {
 		log.Debugf("Deleted %d entries from map %s", deleted, file)
@@ -78,9 +78,8 @@ func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
 func (d *Daemon) EnableConntrackGC() {
 	go func() {
 		seenGlobal := false
+		sleepTime := time.Duration(GcInterval) * time.Second
 		for {
-			sleepTime := time.Duration(GcInterval) * time.Second
-
 			d.endpointsMU.RLock()
 
 			for k := range d.endpoints {
@@ -113,9 +112,9 @@ func (d *Daemon) EnableConntrackGC() {
 				e.Mutex.RUnlock()
 				// We can unlock the endpoint mutex sense
 				// in runGC it will be locked as needed.
-				runGC(e, isLocal, true)
+				runGC(e, isLocal, true, 0)
 				if !d.conf.IPv4Disabled {
-					runGC(e, isLocal, false)
+					runGC(e, isLocal, false, 0)
 				}
 			}
 
@@ -124,4 +123,28 @@ func (d *Daemon) EnableConntrackGC() {
 			seenGlobal = false
 		}
 	}()
+}
+
+// CleanConntrack cleans the connection tracking table.
+func (d *Daemon) CleanConntrack() {
+	d.endpointsMU.RLock()
+
+	for k := range d.endpoints {
+		e := d.endpoints[k]
+		e.Mutex.RLock()
+		if e.Consumable == nil {
+			e.Mutex.RUnlock()
+			continue
+		}
+		isLocal := e.Opts.IsEnabled(endpoint.OptionConntrackLocal)
+		e.Mutex.RUnlock()
+		// We can unlock the endpoint mutex since
+		// in runGC it will be locked as needed.
+		runGC(e, isLocal, true, 0xFFFFFFFF) // 0xFFFFFFFF is the max interval possible.
+		if !d.conf.IPv4Disabled {
+			runGC(e, isLocal, false, 0xFFFFFFFF) // 0xFFFFFFFF is the max interval possible.
+		}
+	}
+
+	d.endpointsMU.RUnlock()
 }
