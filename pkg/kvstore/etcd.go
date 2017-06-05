@@ -17,6 +17,8 @@ package kvstore
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -31,6 +33,8 @@ import (
 	client "github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/coreos/etcd/mvcc/mvccpb"
+	etcdVersion "github.com/coreos/etcd/version"
+	"github.com/hashicorp/go-version"
 	ctx "golang.org/x/net/context"
 )
 
@@ -41,6 +45,10 @@ const (
 	// ECfg is the string representing the key mapping to the path of the
 	// configuration for Etcd.
 	ECfg = "etcd.config"
+)
+
+var (
+	minEVersion, _ = version.NewConstraint(">= 3.1.0")
 )
 
 // EtcdOpts is the set of supported options for Etcd configuration.
@@ -63,6 +71,30 @@ type EtcdLocker struct {
 	path      string
 }
 
+func getClusterVersionFrom(etcdEP string) (*version.Version, error) {
+	r, err := http.Get(etcdEP + "/version")
+	if err != nil {
+		return nil, fmt.Errorf("error contacting etcd endpoint %q: %s", etcdEP, err)
+	}
+	if r.StatusCode != 200 {
+		return nil, fmt.Errorf("http error code returned from endpoint was %d", r.StatusCode)
+	}
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading \"/version\" response from etcd endpoint %q: %s", etcdEP, err)
+	}
+	r.Body.Close()
+	var ver etcdVersion.Versions
+	if err := json.Unmarshal(b, &ver); err != nil {
+		return nil, fmt.Errorf("error unmarshalling etcd  \"/version\" response: %s", err)
+	}
+	v, err := version.NewVersion(ver.Cluster)
+	if err != nil {
+		return nil, fmt.Errorf("error creating a new version object for etcd cluster version: %s", err)
+	}
+	return v, nil
+}
+
 func NewEtcdClient(config *client.Config, cfgPath string) (KVClient, error) {
 	var (
 		c   *client.Client
@@ -83,12 +115,13 @@ func NewEtcdClient(config *client.Config, cfgPath string) (KVClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Unable to contact etcd: %s", err)
 	}
-	log.Info("Etcd client ready")
 	ec := &EtcdClient{
 		cli:       c,
 		session:   s,
 		lockPaths: map[string]*sync.Mutex{},
 	}
+	ec.CheckMinVersion()
+	log.Info("Etcd client ready")
 	go func() {
 		for {
 			<-ec.session.Done()
@@ -101,10 +134,38 @@ func NewEtcdClient(config *client.Config, cfgPath string) (KVClient, error) {
 				ec.session = newSession
 				ec.sessionMU.Unlock()
 				log.Debugf("Renewing etcd session")
+				ec.CheckMinVersion()
 			}
 		}
 	}()
 	return ec, nil
+}
+
+// CheckMinVersion checks the minimal version running on etcd cluster. If the
+// minimal version running doesn't meet cilium minimal requirements, exits
+// cilium.
+func (e *EtcdClient) CheckMinVersion() {
+	eps := e.cli.Endpoints()
+	success := false
+	for _, ep := range eps {
+		v, err := getClusterVersionFrom(ep)
+		if err != nil {
+			log.Debugf("Unable to check min version: %s", err)
+			continue
+		}
+		if minEVersion.Check(v) {
+			log.Infof("etcd cluster version: %s", v.String())
+			success = true
+			break
+		}
+		// FIXME: after we rework the refetching IDs for a connection lost
+		// remove this Fatal and replace it with a warning
+		log.Fatalf("ETCD cluster doesn't meet the minimal requirement, please upgrade it to %s", minEVersion.String())
+	}
+	if !success {
+		log.Warningf("Unable to check etcd's cluster version."+
+			" Please make sure the minimal etcd cluster running is %s", minEVersion.String())
+	}
 }
 
 func (e *EtcdClient) LockPath(path string) (KVLocker, error) {
